@@ -192,7 +192,15 @@ class Orchestrator:
                 token, metadata = chunk
                 # Only stream content from the main agent (not subagents), skip tool call chunks
                 if not namespace and token.content and not getattr(token, "tool_call_chunks", None):
-                    await channel.send_token(msg.channel_uid, token.content)
+                    content = token.content
+                    # content can be a list of blocks (e.g. [{"type": "text", "text": "..."}])
+                    if isinstance(content, list):
+                        content = "".join(
+                            block.get("text", "") if isinstance(block, dict) else str(block)
+                            for block in content
+                        )
+                    if content:
+                        await channel.send_token(msg.channel_uid, content)
         except Exception:
             logger.exception("Error streaming response for user %d", user.id)
             await channel.send_text(msg.channel_uid, "An error occurred processing your message.")
