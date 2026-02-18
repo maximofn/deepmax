@@ -6,6 +6,10 @@
 
 El plan de implementación completo está en `PLAN.md`.
 
+## Aprendizaje continuo
+
+Cuando encuentres un problema y lo soluciones, documéntalo en la sección "Problemas conocidos y soluciones" al final de este archivo. Esto evita repetir errores en futuras sesiones.
+
 ## Idioma
 
 El usuario habla español. Todo el código (variables, funciones, docstrings) debe estar en inglés, los mensajes de commit deben estar en inglés, comentarios explicativos del código deben estar en inglés, pero la comunicación deben ser en español.
@@ -148,23 +152,37 @@ deepmax/
 
 ## Creación del Deep Agent
 
+**IMPORTANTE:** `AsyncPostgresSaver.from_conn_string()` devuelve un async context manager, NO el objeto directamente. Para uso long-lived hay que crear `AsyncConnectionPool` de psycopg manualmente:
+
 ```python
 # agent.py
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.store.postgres.aio import AsyncPostgresStore
+from psycopg_pool import AsyncConnectionPool
 
-async def create_bot_agent(config):
-    """Create the Deep Agent with PostgreSQL persistence."""
-    checkpointer = AsyncPostgresSaver.from_conn_string(config.database.url)
+_POOL_KWARGS = {"autocommit": True, "prepare_threshold": 0}
+
+async def create_agent_manager(config):
+    # Pool para checkpointer (historial por thread)
+    checkpointer_pool = AsyncConnectionPool(
+        conninfo=config.database.url, max_size=5, kwargs=_POOL_KWARGS, open=False
+    )
+    await checkpointer_pool.open()
+    checkpointer = AsyncPostgresSaver(checkpointer_pool)
     await checkpointer.setup()
 
-    store = AsyncPostgresStore.from_conn_string(config.database.url)
+    # Pool para store (memoria cross-thread en /memories/)
+    store_pool = AsyncConnectionPool(
+        conninfo=config.database.url, max_size=5, kwargs=_POOL_KWARGS, open=False
+    )
+    await store_pool.open()
+    store = AsyncPostgresStore(store_pool)
     await store.setup()
 
     agent = create_deep_agent(
-        model=config.provider.model,  # e.g. "anthropic:claude-sonnet-4-5-20250929"
+        model=config.provider.model,
         system_prompt=config.provider.system_prompt,
         backend=lambda rt: CompositeBackend(
             default=StateBackend(rt),
@@ -172,11 +190,14 @@ async def create_bot_agent(config):
         ),
         store=store,
         checkpointer=checkpointer,
-        tools=[],
+        memory=["/memories/AGENTS.md"],
     )
 
-    return agent, checkpointer, store
+    return agent, checkpointer_pool, store_pool
+    # Cerrar pools en shutdown: await pool.close()
 ```
+
+**Paquetes:** `AsyncPostgresStore` NO tiene paquete propio (`langgraph-store-postgres` no existe). Viene incluido en `langgraph-checkpoint-postgres>=3.0`. Necesita `psycopg[binary,pool]>=3.0` como driver.
 
 ## Schema PostgreSQL
 
@@ -449,6 +470,48 @@ Secuencia:
 11. Enviar mensaje largo -> verificar chunking correcto en Telegram
 12. Ctrl+C -> verificar shutdown limpio
 
-## Secretos
+## Secretos y variables de entorno
 
-API keys exclusivamente via env vars: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `TELEGRAM_BOT_TOKEN`. Nunca en config.toml ni en código.
+API keys y modelo se configuran via `.env` (cargado con `python-dotenv` al arrancar). Nunca en config.toml ni en código.
+
+```bash
+# .env.example
+ANTHROPIC_API_KEY="anthropic_api_key_here"
+ANTHROPIC_OPUS_4_6="anthropic:claude-opus-4-6"
+ANTHROPIC_SONNET_4_5="anthropic:claude-sonnet-4-5-20250929"
+ANTHROPIC_HAIKU_4_5="anthropic:claude-haiku-4-5-20251001"
+ANTHROPIC_MODEL=ANTHROPIC_HAIKU_4_5
+```
+
+**Indirección de modelo:** `ANTHROPIC_MODEL` apunta al *nombre* de otra env var. `config.py` resuelve la cadena: `ANTHROPIC_MODEL` → `ANTHROPIC_HAIKU_4_5` → `anthropic:claude-haiku-4-5-20251001`. Para cambiar modelo, solo modificar `ANTHROPIC_MODEL=ANTHROPIC_SONNET_4_5`.
+
+Otras env vars: `OPENAI_API_KEY`, `GOOGLE_API_KEY`, `TELEGRAM_BOT_TOKEN`.
+
+## Infraestructura local
+
+PostgreSQL via Docker Compose (`docker-compose.yml`):
+
+```bash
+docker compose up -d     # levantar
+docker compose down       # parar (datos persisten en volumen)
+docker compose down -v    # parar y borrar datos
+```
+
+## Problemas conocidos y soluciones
+
+> Añadir aquí cada problema resuelto para no repetirlo.
+
+### `AsyncPostgresSaver.from_conn_string()` devuelve context manager
+- **Síntoma:** `AttributeError: '_AsyncGeneratorContextManager' object has no attribute 'setup'`
+- **Causa:** `from_conn_string()` es un async context manager, no el objeto directo.
+- **Solución:** Usar `AsyncConnectionPool` de psycopg directamente con `open=False`, luego `await pool.open()`, luego `AsyncPostgresSaver(pool)`.
+- **Kwargs obligatorios:** `{"autocommit": True, "prepare_threshold": 0}` — sin ellos falla silenciosamente.
+
+### `langgraph-store-postgres` no existe en PyPI
+- **Síntoma:** `No solution found when resolving dependencies`
+- **Causa:** El paquete no existe como separado.
+- **Solución:** `AsyncPostgresStore` viene incluido en `langgraph-checkpoint-postgres>=3.0`. Solo necesitas ese paquete + `psycopg[binary,pool]>=3.0`.
+
+### Warning de psycopg pool al crear `AsyncConnectionPool`
+- **Síntoma:** `RuntimeWarning: opening the async pool in the constructor is deprecated`
+- **Solución:** Pasar `open=False` al constructor y luego `await pool.open()` explícitamente.
