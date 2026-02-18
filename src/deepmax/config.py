@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -70,4 +71,13 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             with open(p, "rb") as f:
                 data = tomllib.load(f)
 
-    return AppConfig.model_validate(data)
+    config = AppConfig.model_validate(data)
+
+    # Override model from env var ANTHROPIC_MODEL (with indirection support)
+    model_ref = os.environ.get("ANTHROPIC_MODEL")
+    if model_ref:
+        # Support indirection: ANTHROPIC_MODEL=ANTHROPIC_HAIKU_4_5 -> resolve the referenced var
+        resolved = os.environ.get(model_ref, model_ref)
+        config.provider.model = resolved
+
+    return config

@@ -4,6 +4,10 @@ import asyncio
 import logging
 import signal
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from deepmax.agent import create_agent_manager
 from deepmax.channels.telegram import TelegramChannel
 from deepmax.channels.terminal import TerminalChannel
