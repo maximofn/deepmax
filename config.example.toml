@@ -1,0 +1,25 @@
+[database]
+url = "postgresql://user:pass@localhost:5432/deepmax"
+
+[provider]
+model = "anthropic:claude-sonnet-4-5-20250929"
+system_prompt = "You are a helpful and concise personal assistant."
+# API keys via env vars: ANTHROPIC_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY
+
+[channels.terminal]
+enabled = true
+user_name = "maximo"
+
+[channels.telegram]
+enabled = false
+# Token via env var: TELEGRAM_BOT_TOKEN
+allowed_users = []
+
+[identity]
+# Link canonical user names to channel UIDs
+# [identity.links.maximo]
+# terminal = "local"
+# telegram = "123456"
+
+[limits]
+shutdown_drain = 30
