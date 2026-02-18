@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.postgres.aio import AsyncPostgresStore
+from psycopg_pool import AsyncConnectionPool
 
 from deepmax.config import AppConfig
 
 logger = logging.getLogger(__name__)
+
+_POOL_KWARGS = {"autocommit": True, "prepare_threshold": 0}
 
 
 class AgentManager:
@@ -56,12 +58,24 @@ class AgentManager:
 
 async def create_agent_manager(
     config: AppConfig,
-) -> tuple[AgentManager, AsyncPostgresSaver, AsyncPostgresStore]:
-    """Initialize PostgreSQL persistence and create the agent manager."""
-    checkpointer = AsyncPostgresSaver.from_conn_string(config.database.url)
+) -> tuple[AgentManager, AsyncConnectionPool, AsyncConnectionPool]:
+    """Initialize PostgreSQL persistence and create the agent manager.
+
+    Returns (AgentManager, checkpointer_pool, store_pool) so the caller
+    can close the pools on shutdown.
+    """
+    checkpointer_pool = AsyncConnectionPool(
+        conninfo=config.database.url, max_size=5, kwargs=_POOL_KWARGS, open=False
+    )
+    await checkpointer_pool.open()
+    checkpointer = AsyncPostgresSaver(checkpointer_pool)
     await checkpointer.setup()
 
-    store = AsyncPostgresStore.from_conn_string(config.database.url)
+    store_pool = AsyncConnectionPool(
+        conninfo=config.database.url, max_size=5, kwargs=_POOL_KWARGS, open=False
+    )
+    await store_pool.open()
+    store = AsyncPostgresStore(store_pool)
     await store.setup()
 
     manager = AgentManager(
@@ -75,4 +89,4 @@ async def create_agent_manager(
     manager.get_agent()
 
     logger.info("Agent manager initialized (default model: %s)", config.provider.model)
-    return manager, checkpointer, store
+    return manager, checkpointer_pool, store_pool

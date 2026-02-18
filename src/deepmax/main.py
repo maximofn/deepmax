@@ -32,7 +32,7 @@ async def main() -> None:
     pool = await init_pool(config.database.url)
 
     # --- Agent ---
-    agent_manager, checkpointer, store = await create_agent_manager(config)
+    agent_manager, checkpointer_pool, store_pool = await create_agent_manager(config)
 
     # --- Identity ---
     identity = IdentityService(pool, config)
@@ -99,14 +99,8 @@ async def main() -> None:
     # 4. Close database pool
     await close_pool(pool)
 
-    # 5. Close checkpointer and store connections
-    try:
-        await checkpointer.conn.close()
-    except Exception:
-        pass
-    try:
-        await store.conn.close()
-    except Exception:
-        pass
+    # 5. Close checkpointer and store connection pools
+    await checkpointer_pool.close()
+    await store_pool.close()
 
     logger.info("deepmax stopped")
