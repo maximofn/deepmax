@@ -48,8 +48,16 @@ La documentación del framework Deep Agents está en `../deepagents/` (directori
 | `03-customization.md` | Model, tools, system_prompt, middleware, subagents, backends, skills, memory, structured output |
 | `04-harness.md` | Capacidades built-in: planning (write_todos), filesystem virtual, subagents, auto-summarización, context management |
 | `05-backends.md` | StateBackend, FilesystemBackend, StoreBackend, CompositeBackend, protocolo custom |
+| `06-subagents.md` | Spawning de subagentes, aislamiento de contexto, subagentes custom con tools/modelos específicos |
+| `07-human-in-the-loop.md` | `interrupt_on` config, decisiones approve/edit/reject, manejo de interrupts con `Command(resume=)` |
 | `08-long-term-memory.md` | CompositeBackend con `/memories/` para persistencia cross-thread, PostgresStore |
+| `09-skills.md` | Formato SKILL.md con frontmatter, progressive disclosure, skills vs memory, skills para subagentes |
+| `10-sandboxes.md` | Sandbox backends (Modal, Daytona, Runloop), execute tool, file transfer, seguridad |
 | `11-streaming-overview.md` | Streaming de tokens, subagent progress, tool calls, custom events, stream modes |
+| `12-streaming-frontend.md` | React `useStream` hook, SubagentStream, thread persistence, subagent cards |
+| `13-agent-client-protocol-acp.md` | Protocolo ACP para integración con IDEs (Zed, JetBrains, VSCode), AgentServerACP |
+| `14-cli-overview.md` | Deep Agents CLI: tools built-in (ls, read_file, write_file, shell, grep, etc.), memory, skills, slash commands |
+| `15-cli-providers.md` | Referencia de 20+ proveedores, config.toml, model resolution order, providers arbitrarios via `class_path` |
 
 **Formato modelo multi-proveedor:** `"provider:model"` (e.g. `"anthropic:claude-sonnet-4-5-20250929"`, `"openai:gpt-4.1"`, `"google_genai:gemini-2.5-flash-lite"`).
 
