@@ -34,3 +34,6 @@ packages = ["src/deepmax"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests that call external APIs (deselect with '-m \"not slow\"')",
+]
