@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    container_name: deepmax-db
+    environment:
+      POSTGRES_USER: deepmax
+      POSTGRES_PASSWORD: deepmax
+      POSTGRES_DB: deepmax
+    ports:
+      - "5432:5432"
+    volumes:
+      - deepmax-data:/var/lib/postgresql/data
+
+volumes:
+  deepmax-data:
