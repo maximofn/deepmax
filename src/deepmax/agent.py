@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
+from deepagents.backends.utils import create_file_data
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.postgres.aio import AsyncPostgresStore
@@ -56,6 +58,24 @@ class AgentManager:
         )
 
 
+_AGENTS_MD_PATH = Path(__file__).parent.parent.parent / "AGENTS.md"
+
+
+async def _seed_agents_md(store: AsyncPostgresStore) -> None:
+    """Seed AGENTS.md from disk into the store so the agent loads it as memory."""
+    if not _AGENTS_MD_PATH.exists():
+        logger.warning("AGENTS.md not found at %s, skipping memory seed", _AGENTS_MD_PATH)
+        return
+    content = _AGENTS_MD_PATH.read_text()
+    # CompositeBackend strips "/memories/" prefix, so the key in the store is "/AGENTS.md"
+    await store.aput(
+        namespace=("filesystem",),
+        key="/AGENTS.md",
+        value=create_file_data(content),
+    )
+    logger.info("Seeded AGENTS.md into store")
+
+
 async def create_agent_manager(
     config: AppConfig,
 ) -> tuple[AgentManager, AsyncConnectionPool, AsyncConnectionPool]:
@@ -77,6 +97,9 @@ async def create_agent_manager(
     await store_pool.open()
     store = AsyncPostgresStore(store_pool)
     await store.setup()
+
+    # Seed AGENTS.md into the store so the agent loads it as memory
+    await _seed_agents_md(store)
 
     manager = AgentManager(
         checkpointer=checkpointer,
