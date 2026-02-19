@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
@@ -21,24 +20,19 @@ class IncomingMessage:
     text: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class User:
-    id: int
     name: str
-    created_at: datetime | None = None
 
 
 @dataclass
 class Conversation:
-    id: int
-    user_id: int
     thread_id: str
     title: str | None
     model: str
     system_prompt: str | None
     is_active: bool
-    created_at: datetime | None = None
-    updated_at: datetime | None = None
+    created_at: str  # ISO 8601
 
 
 @runtime_checkable

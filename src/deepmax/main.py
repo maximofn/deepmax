@@ -14,7 +14,6 @@ from deepmax.channels.terminal import TerminalChannel
 from deepmax.config import load_config
 from deepmax.core.identity import IdentityService
 from deepmax.core.orchestrator import Orchestrator
-from deepmax.storage.db import close_pool, init_pool
 
 logger = logging.getLogger(__name__)
 
@@ -28,15 +27,11 @@ async def main() -> None:
 
     config = load_config()
 
-    # --- Database ---
-    pool = await init_pool(config.database.url)
-
     # --- Agent ---
     agent_manager, checkpointer_pool, store_pool = await create_agent_manager(config)
 
     # --- Identity ---
-    identity = IdentityService(pool, config)
-    await identity.bootstrap_from_config()
+    identity = IdentityService(config)
 
     # --- Shutdown coordination ---
     shutdown_event = asyncio.Event()
@@ -72,7 +67,6 @@ async def main() -> None:
 
     if not channel_tasks:
         logger.error("No channels enabled, exiting")
-        await close_pool(pool)
         return
 
     logger.info("deepmax ready (%d channel(s))", len(channel_tasks))
@@ -96,10 +90,7 @@ async def main() -> None:
         task.cancel()
     await asyncio.gather(*channel_tasks, return_exceptions=True)
 
-    # 4. Close database pool
-    await close_pool(pool)
-
-    # 5. Close checkpointer and store connection pools
+    # 4. Close checkpointer and store connection pools
     await checkpointer_pool.close()
     await store_pool.close()
 

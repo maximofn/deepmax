@@ -1,6 +1,9 @@
 [database]
 url = "postgresql://user:pass@localhost:5432/deepmax"
 
+[storage]
+data_dir = "data"  # directory for conversations.json
+
 [provider]
 model = "anthropic:claude-sonnet-4-5-20250929"
 system_prompt = "You are a helpful and concise personal assistant."

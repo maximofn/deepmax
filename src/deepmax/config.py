@@ -43,6 +43,10 @@ class IdentityConfig(BaseModel):
     links: dict[str, IdentityLink] = Field(default_factory=dict)
 
 
+class StorageConfig(BaseModel):
+    data_dir: str = "data"
+
+
 class LimitsConfig(BaseModel):
     shutdown_drain: int = 30
 
@@ -52,6 +56,7 @@ class AppConfig(BaseModel):
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
     channels: ChannelsConfig = Field(default_factory=ChannelsConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)
 
 

@@ -36,13 +36,13 @@ class Orchestrator:
         self.identity = identity
         self.config = config
         self.shutdown_event = shutdown_event
-        self._user_locks: dict[int, asyncio.Lock] = {}
+        self._user_locks: dict[str, asyncio.Lock] = {}
         self._active_tasks: set[asyncio.Task] = set()
 
-    def _get_lock(self, user_id: int) -> asyncio.Lock:
-        if user_id not in self._user_locks:
-            self._user_locks[user_id] = asyncio.Lock()
-        return self._user_locks[user_id]
+    def _get_lock(self, user_name: str) -> asyncio.Lock:
+        if user_name not in self._user_locks:
+            self._user_locks[user_name] = asyncio.Lock()
+        return self._user_locks[user_name]
 
     async def handle_message(self, msg: IncomingMessage, channel: Channel) -> None:
         """Main entry point for all incoming messages."""
@@ -50,13 +50,13 @@ class Orchestrator:
             await channel.send_text(msg.channel_uid, "Bot is shutting down, please try again later.")
             return
 
-        user = await self.identity.resolve(msg.channel, msg.channel_uid)
+        user = self.identity.resolve(msg.channel, msg.channel_uid)
         if user is None:
             logger.warning("Access denied: %s/%s", msg.channel, msg.channel_uid)
             await channel.send_text(msg.channel_uid, "Access denied.")
             return
 
-        lock = self._get_lock(user.id)
+        lock = self._get_lock(user.name)
         async with lock:
             task = asyncio.current_task()
             if task:
@@ -77,15 +77,15 @@ class Orchestrator:
         match command:
             case "/new":
                 conv = await self.identity.create_conversation(
-                    user.id, self.config.provider.model, self.config.provider.system_prompt
+                    self.config.provider.model, self.config.provider.system_prompt
                 )
                 await channel.send_text(
                     channel_uid,
-                    f"New conversation created (id={conv.id}). Thread: {conv.thread_id[:8]}...",
+                    f"New conversation created. Thread: {conv.thread_id[:8]}...",
                 )
 
             case "/history":
-                convs = await self.identity.list_conversations(user.id)
+                convs = await self.identity.list_conversations()
                 if not convs:
                     await channel.send_text(channel_uid, "No conversations yet.")
                     return
@@ -93,59 +93,55 @@ class Orchestrator:
                 for c in convs:
                     active = " *" if c.is_active else ""
                     title = c.title or "(untitled)"
-                    lines.append(f"  [{c.id}] {title} — {c.model}{active}")
+                    lines.append(f"  [{c.thread_id[:8]}] {title} — {c.model}{active}")
                 await channel.send_text(channel_uid, "Conversations:\n" + "\n".join(lines))
 
             case "/switch":
                 if not args.strip():
-                    await channel.send_text(channel_uid, "Usage: /switch <id>")
+                    await channel.send_text(channel_uid, "Usage: /switch <thread_id_prefix>")
                     return
-                try:
-                    conv_id = int(args.strip())
-                except ValueError:
-                    await channel.send_text(channel_uid, "Invalid conversation id.")
-                    return
-                conv = await self.identity.switch_conversation(user.id, conv_id)
+                prefix = args.strip()
+                conv = await self.identity.switch_conversation(prefix)
                 if conv is None:
                     await channel.send_text(channel_uid, "Conversation not found.")
                 else:
                     title = conv.title or "(untitled)"
-                    await channel.send_text(channel_uid, f"Switched to [{conv.id}] {title}")
+                    await channel.send_text(channel_uid, f"Switched to [{conv.thread_id[:8]}] {title}")
 
             case "/title":
                 if not args.strip():
                     await channel.send_text(channel_uid, "Usage: /title <text>")
                     return
-                conv = await self.identity.get_active_conversation(user.id)
+                conv = await self.identity.get_active_conversation()
                 if conv is None:
                     await channel.send_text(channel_uid, "No active conversation.")
                     return
-                await self.identity.update_conversation_title(conv.id, args.strip())
+                await self.identity.update_conversation_title(conv.thread_id, args.strip())
                 await channel.send_text(channel_uid, f"Title set: {args.strip()}")
 
             case "/model":
                 if not args.strip():
-                    conv = await self.identity.get_active_conversation(user.id)
+                    conv = await self.identity.get_active_conversation()
                     current = conv.model if conv else self.config.provider.model
                     await channel.send_text(channel_uid, f"Current model: {current}")
                     return
                 new_model = args.strip()
-                conv = await self.identity.get_active_conversation(user.id)
+                conv = await self.identity.get_active_conversation()
                 if conv is None:
                     await channel.send_text(channel_uid, "No active conversation.")
                     return
-                await self.identity.update_conversation_model(conv.id, new_model)
+                await self.identity.update_conversation_model(conv.thread_id, new_model)
                 await channel.send_text(channel_uid, f"Model changed to: {new_model}")
 
             case "/system":
                 if not args.strip():
                     await channel.send_text(channel_uid, "Usage: /system <prompt>")
                     return
-                conv = await self.identity.get_active_conversation(user.id)
+                conv = await self.identity.get_active_conversation()
                 if conv is None:
                     await channel.send_text(channel_uid, "No active conversation.")
                     return
-                await self.identity.update_conversation_system_prompt(conv.id, args.strip())
+                await self.identity.update_conversation_system_prompt(conv.thread_id, args.strip())
                 await channel.send_text(channel_uid, "System prompt updated.")
 
             case "/help":
@@ -153,7 +149,7 @@ class Orchestrator:
                     "Commands:\n"
                     "  /new — New conversation\n"
                     "  /history — List conversations\n"
-                    "  /switch <id> — Switch conversation\n"
+                    "  /switch <prefix> — Switch conversation by thread_id prefix\n"
                     "  /title <text> — Set title\n"
                     "  /model [provider:model] — Show/change model\n"
                     "  /system <prompt> — Change system prompt\n"
@@ -168,7 +164,7 @@ class Orchestrator:
         self, msg: IncomingMessage, user: User, channel: Channel
     ) -> None:
         conv = await self.identity.get_or_create_active_conversation(
-            user.id, self.config.provider.model, self.config.provider.system_prompt
+            self.config.provider.model, self.config.provider.system_prompt
         )
         await self._stream_response(msg, user, channel, conv)
 
@@ -202,7 +198,7 @@ class Orchestrator:
                     if content:
                         await channel.send_token(msg.channel_uid, content)
         except Exception:
-            logger.exception("Error streaming response for user %d", user.id)
+            logger.exception("Error streaming response for user %s", user.name)
             await channel.send_text(msg.channel_uid, "An error occurred processing your message.")
         finally:
             typing_task.cancel()

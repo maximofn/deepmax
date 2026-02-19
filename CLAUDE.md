@@ -61,13 +61,13 @@ El usuario habla español. Todo el código (variables, funciones, docstrings) de
 
 **Flujo de un mensaje:**
 1. Canal recibe texto, normaliza a `IncomingMessage(channel, channel_uid, text)`
-2. Orchestrator resuelve identidad cross-canal -> obtiene `User` canónico
-3. Obtiene conversación activa del usuario -> obtiene `thread_id` de LangGraph
+2. Orchestrator resuelve identidad via config.toml lookup -> obtiene `User(name=...)` canónico
+3. Obtiene conversación activa del JSON -> obtiene `thread_id` de LangGraph
 4. Llama `agent.astream(input, config={"thread_id": ...}, stream_mode="messages")`
 5. Itera tokens del stream, los envía al canal en tiempo real
 6. LangGraph persiste automáticamente el historial en PostgreSQL
 
-**Continuidad cross-canal:** ambos canales resuelven al mismo `User` vía `channel_identities`. El mismo `thread_id` se usa independientemente del canal, así el LLM ve todo el historial.
+**Continuidad cross-canal:** ambos canales resuelven al mismo `User` vía `config.identity.links`. El mismo `thread_id` se usa independientemente del canal, así el LLM ve todo el historial.
 
 ## Deep Agents SDK
 
@@ -127,6 +127,8 @@ deepmax/
 ├── pyproject.toml
 ├── config.example.toml
 ├── AGENTS.md                 # Memoria persistente del agente (convenciones, preferencias)
+├── data/                     # Auto-generado, en .gitignore
+│   └── conversations.json    # Tracking de conversaciones (thread_id, model, etc.)
 ├── skills/                   # Skills opcionales del agente
 │   └── .gitkeep
 ├── src/
@@ -139,15 +141,12 @@ deepmax/
 │       │
 │       ├── core/
 │       │   ├── orchestrator.py  # Recibe mensajes de canales, resuelve identidad, llama agent
-│       │   └── identity.py      # Resolución de identidad cross-canal + tabla conversations
+│       │   └── identity.py      # Resolución de identidad (config.toml) + conversations (JSON)
 │       │
-│       ├── channels/
-│       │   ├── base.py          # Protocolo abstracto de canal
-│       │   ├── terminal.py      # Adaptador stdin/stdout con prompt_toolkit
-│       │   └── telegram.py      # Adaptador aiogram
-│       │
-│       └── storage/
-│           └── db.py            # Pool asyncpg para identidades/conversations (ligero)
+│       └── channels/
+│           ├── base.py          # Protocolo abstracto de canal
+│           ├── terminal.py      # Adaptador stdin/stdout con prompt_toolkit
+│           └── telegram.py      # Adaptador aiogram
 ```
 
 ## Creación del Deep Agent
@@ -199,59 +198,9 @@ async def create_agent_manager(config):
 
 **Paquetes:** `AsyncPostgresStore` NO tiene paquete propio (`langgraph-store-postgres` no existe). Viene incluido en `langgraph-checkpoint-postgres>=3.0`. Necesita `psycopg[binary,pool]>=3.0` como driver.
 
-## Schema PostgreSQL
+## Almacenamiento
 
-LangGraph crea sus propias tablas para checkpoints y store. Nosotros solo mantenemos 3 tablas ligeras:
-
-```sql
--- Usuarios canónicos
-CREATE TABLE users (
-    id          SERIAL PRIMARY KEY,
-    name        TEXT NOT NULL,
-    created_at  TIMESTAMPTZ DEFAULT now()
-);
-
--- Identidades por canal
-CREATE TABLE channel_identities (
-    id          SERIAL PRIMARY KEY,
-    user_id     INT REFERENCES users(id) ON DELETE CASCADE,
-    channel     TEXT NOT NULL,
-    channel_uid TEXT NOT NULL,
-    metadata    JSONB DEFAULT '{}',
-    UNIQUE(channel, channel_uid)
-);
-
--- Conversaciones: mapea user -> thread_id de LangGraph + metadata
-CREATE TABLE conversations (
-    id            SERIAL PRIMARY KEY,
-    user_id       INT REFERENCES users(id) ON DELETE CASCADE,
-    thread_id     TEXT NOT NULL UNIQUE,     -- UUID para LangGraph
-    title         TEXT,
-    model         TEXT NOT NULL,            -- 'anthropic:claude-sonnet-4-5-20250929'
-    system_prompt TEXT,
-    is_active     BOOLEAN DEFAULT true,
-    created_at    TIMESTAMPTZ DEFAULT now(),
-    updated_at    TIMESTAMPTZ DEFAULT now()
-);
-
--- Auto-actualizar updated_at
-CREATE OR REPLACE FUNCTION update_updated_at()
-RETURNS TRIGGER AS $$
-BEGIN NEW.updated_at = now(); RETURN NEW; END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_conversations_updated_at
-    BEFORE UPDATE ON conversations
-    FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-
--- Solo una conversación activa por usuario
-CREATE UNIQUE INDEX idx_one_active_conv
-    ON conversations(user_id) WHERE is_active = true;
-
-CREATE INDEX idx_channel_identities_lookup ON channel_identities(channel, channel_uid);
-```
-
-**No hay tabla `messages`** — LangGraph almacena todo el historial en sus tablas de checkpoints, accesible vía `thread_id`.
+LangGraph gestiona sus propias tablas PostgreSQL para checkpoints y store. Las conversaciones se trackean localmente en `data/conversations.json` (escritura atómica vía tmp+rename). La identidad cross-canal se resuelve directamente desde `config.toml` (dict lookup en memoria, sin BD).
 
 ## Flujo de un mensaje
 
@@ -259,8 +208,8 @@ CREATE INDEX idx_channel_identities_lookup ON channel_identities(channel, channe
 2. **Access control** — verifica que el usuario está autorizado
 3. Canal normaliza a `IncomingMessage(channel, channel_uid, text)`
 4. **Orchestrator** recibe el `IncomingMessage`:
-   a. `identity.resolve(channel, channel_uid)` -> busca/crea `User`
-   b. `identity.get_active_conversation(user_id)` -> obtiene `Conversation` activa (con thread_id y model)
+   a. `identity.resolve(channel, channel_uid)` -> lookup en config.toml -> `User(name=...)`
+   b. `identity.get_active_conversation()` -> lee JSON -> `Conversation` activa (con thread_id y model)
    c. Prepara config de LangGraph: `{"configurable": {"thread_id": conv.thread_id}}`
    d. **Streaming**: itera sobre `agent.astream(input, config, stream_mode="messages", subgraphs=True)`
    e. **Canal muestra progreso** en tiempo real:
@@ -271,8 +220,8 @@ CREATE INDEX idx_channel_identities_lookup ON channel_identities(channel, channe
 ```python
 # orchestrator.py (simplificado)
 async def handle_message(self, msg: IncomingMessage, channel: Channel):
-    user = await self.identity.resolve(msg.channel, msg.channel_uid)
-    conv = await self.identity.get_active_conversation(user.id)
+    user = self.identity.resolve(msg.channel, msg.channel_uid)  # sync dict lookup
+    conv = await self.identity.get_or_create_active_conversation(model, system_prompt)
 
     config = {"configurable": {"thread_id": conv.thread_id}}
     input_msg = {"messages": [{"role": "user", "content": msg.text}]}
@@ -292,14 +241,14 @@ async def handle_message(self, msg: IncomingMessage, channel: Channel):
 
 ```
 Terminal: "Hola, estoy diseñando una API REST"
-  -> identity.resolve("terminal", "local") -> User(id=1)
-  -> get_active_conversation(1) -> Conversation(thread_id="abc-123")
+  -> identity.resolve("terminal", "local") -> User(name="maximo")
+  -> get_active_conversation() -> Conversation(thread_id="abc-123")
   -> agent.astream(input, config={"thread_id": "abc-123"})
   -> LangGraph persiste el mensaje y respuesta en el checkpoint de "abc-123"
 
 Telegram: "Continúa con lo de la API"
-  -> identity.resolve("telegram", "123456") -> User(id=1)  <- MISMO USER
-  -> get_active_conversation(1) -> Conversation(thread_id="abc-123")  <- MISMO THREAD
+  -> identity.resolve("telegram", "123456") -> User(name="maximo")  <- MISMO USER
+  -> get_active_conversation() -> Conversation(thread_id="abc-123")  <- MISMO THREAD
   -> agent.astream(input, config={"thread_id": "abc-123"})
   -> LangGraph carga automáticamente el historial previo del checkpoint
   -> El LLM tiene todo el contexto (incluido lo dicho por terminal)
@@ -331,6 +280,9 @@ Cada canal implementa streaming de forma diferente:
 [database]
 url = "postgresql://user:pass@localhost:5432/deepmax"
 
+[storage]
+data_dir = "data"  # directory for conversations.json
+
 [provider]
 model = "anthropic:claude-sonnet-4-5-20250929"  # formato provider:model
 system_prompt = "Eres un asistente personal útil y conciso."
@@ -359,7 +311,7 @@ Funcionan igual en terminal y en Telegram:
 
 - `/new` — Nueva conversación (crea nuevo thread_id)
 - `/history` — Ver conversaciones anteriores
-- `/switch <id>` — Cambiar a otra conversación (cambia thread_id activo)
+- `/switch <prefix>` — Cambiar a otra conversación por prefijo de thread_id
 - `/title <texto>` — Poner título a la conversación actual
 - `/model <provider:model>` — Cambiar modelo (e.g. `/model openai:gpt-4.1`)
 - `/system <prompt>` — Cambiar system prompt
@@ -376,7 +328,7 @@ El thread_id se mantiene — el historial en LangGraph no depende del modelo.
 
 ```python
 # Al cambiar modelo:
-await identity.update_conversation_model(conv_id, "openai:gpt-4.1")
+await identity.update_conversation_model(conv.thread_id, "openai:gpt-4.1")
 # El orchestrator usa el nuevo modelo en la siguiente invocación
 ```
 
@@ -401,17 +353,17 @@ Lee /memories/ al inicio de conversaciones nuevas.
 ```python
 async def main():
     config = load_config()
-    agent, checkpointer, store = await create_bot_agent(config)
-    db_pool = await asyncpg.create_pool(config.database.url)
-    orchestrator = Orchestrator(agent, db_pool, config)
+    agent_manager, checkpointer_pool, store_pool = await create_agent_manager(config)
+    identity = IdentityService(config)
+    orchestrator = Orchestrator(agent_manager, identity, config, shutdown_event)
 
     tasks = []
     if config.channels.terminal.enabled:
-        terminal = TerminalChannel()
-        tasks.append(asyncio.create_task(terminal.start(orchestrator)))
+        terminal = TerminalChannel(user_name=config.channels.terminal.user_name)
+        tasks.append(asyncio.create_task(terminal.start(orchestrator, shutdown_event)))
     if config.channels.telegram.enabled:
-        telegram = TelegramChannel(token=os.environ["TELEGRAM_BOT_TOKEN"])
-        tasks.append(asyncio.create_task(telegram.start(orchestrator)))
+        telegram = TelegramChannel(allowed_users=config.channels.telegram.allowed_users)
+        tasks.append(asyncio.create_task(telegram.start(orchestrator, shutdown_event)))
 
     await asyncio.gather(*tasks)
 ```
@@ -437,15 +389,14 @@ Secuencia:
 2. Esperar a que streams en progreso terminen (timeout 30s)
 3. Detener aiogram polling
 4. Cerrar prompt_toolkit session
-5. Cerrar pool asyncpg
-6. Cerrar conexiones de checkpointer y store
-7. Exit
+5. Cerrar conexiones de checkpointer y store (psycopg pools)
+6. Exit
 
 ## Pasos de implementación
 
 1. **Setup del proyecto**: pyproject.toml con deepagents + langchain + aiogram + prompt_toolkit
 2. **Config**: carga de config.toml + env vars (pydantic)
-3. **Storage ligero**: pool asyncpg + schema SQL para users/identities/conversations
+3. **Storage ligero**: IdentityService con config.toml lookup + conversations.json
 4. **Agent**: `create_bot_agent()` con Deep Agents SDK, PostgresSaver, PostgresStore
 5. **Identity**: resolución cross-canal + CRUD de conversations (thread_id mapping)
 6. **Orchestrator**: recibe mensajes, resuelve identidad, hace stream del agent, devuelve a canal
@@ -457,9 +408,8 @@ Secuencia:
 
 ## Verificación
 
-1. Arrancar PostgreSQL local (Docker o nativo)
-2. Crear tablas: ejecutar schema SQL + `checkpointer.setup()` + `store.setup()`
-3. Arrancar el bot: `uv run python -m deepmax`
+1. Arrancar PostgreSQL local (Docker o nativo) — solo para LangGraph checkpointer/store
+2. Arrancar el bot: `uv run python -m deepmax`
 4. Escribir en terminal -> ver tokens aparecer progresivamente (streaming)
 5. Escribir en Telegram -> ver typing indicator + respuesta
 6. Verificar en terminal que el contexto de Telegram se mantiene y viceversa

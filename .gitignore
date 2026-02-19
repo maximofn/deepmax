@@ -137,6 +137,9 @@ celerybeat.pid
 # Project config (contains DB URLs, secrets)
 config.toml
 
+# Conversation data (auto-generated)
+data/
+
 # Environments
 .env
 .envrc
